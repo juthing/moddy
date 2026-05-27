@@ -93,7 +93,9 @@ COMMAND_CATEGORIES = {
             ("d.sql [query]", "Execute SQL query on the database"),
             ("d.jsk [code]", "Execute Python code (Jishaku)"),
             ("d.error [error_code]", "Get detailed error information"),
-            ("d.sync", "Sync slash commands globally")
+            ("d.sync", "Sync slash commands globally"),
+            ("d.serverlist", "List all servers the bot is in"),
+            ("d.setup-announcements [guild_id]", "Setup announcement channel following for a guild")
         ],
         "roles": [StaffRole.DEV]
     }
