@@ -193,6 +193,8 @@ class DeveloperCommands(StaffCommandsCog):
             await self.handle_setup_announcements_command(message, args)
         elif command_name == "serverlist":
             await self.handle_serverlist_command(message, args)
+        elif command_name == "redirect":
+            await self.handle_redirect_command(message, args)
         else:
             view = create_error_message("Unknown Command", f"Developer command `{command_name}` not found.")
             await self.reply_with_tracking(message, view)
@@ -889,6 +891,165 @@ class DeveloperCommands(StaffCommandsCog):
         view = ServerListView(self.bot, guilds, page=0, per_page=10)
 
         # Send the view
+        await self.reply_with_tracking(message, view)
+
+
+    async def handle_redirect_command(self, message: discord.Message, args: str):
+        """
+        Handle d.redirect command - Manage redirect links
+        Usage:
+          d.redirect add <domain> <path> [description]
+          d.redirect list [domain]
+          d.redirect delete <id>
+          d.redirect info <id>
+        """
+        if staff_logger:
+            await staff_logger.log_command("d", "redirect", message.author, args=args or "no args")
+
+        parts = (args or "").split(None, 1)
+        subcommand = parts[0].lower() if parts else ""
+        sub_args = parts[1] if len(parts) > 1 else ""
+
+        if subcommand == "add":
+            await self._redirect_add(message, sub_args)
+        elif subcommand == "list":
+            await self._redirect_list(message, sub_args.strip() or None)
+        elif subcommand == "delete":
+            await self._redirect_delete(message, sub_args.strip())
+        elif subcommand == "info":
+            await self._redirect_info(message, sub_args.strip())
+        else:
+            view = create_info_message(
+                "Redirect Commands",
+                "Manage redirect links registered in the database.",
+                fields=[
+                    {"name": "Add", "value": "`d.redirect add <domain> <path> [description]`"},
+                    {"name": "List", "value": "`d.redirect list [domain]`"},
+                    {"name": "Info", "value": "`d.redirect info <id>`"},
+                    {"name": "Delete", "value": "`d.redirect delete <id>`"},
+                ]
+            )
+            await self.reply_with_tracking(message, view)
+
+    async def _redirect_add(self, message: discord.Message, args: str):
+        """Add a redirect link: <domain> <path> [description]"""
+        parts = args.split(None, 2)
+        if len(parts) < 2:
+            view = create_error_message(
+                "Missing Arguments",
+                "**Usage:** `d.redirect add <domain> <path> [description]`\n"
+                "-# Example: `d.redirect add moddy.app /privacy Privacy policy page`"
+            )
+            await self.reply_with_tracking(message, view)
+            return
+
+        domain = parts[0].lower().strip("/")
+        path = parts[1] if parts[1].startswith("/") else f"/{parts[1]}"
+        description = parts[2] if len(parts) > 2 else None
+
+        result = await db.create_redirect_link(
+            domain=domain,
+            path=path,
+            added_by=message.author.id,
+            description=description,
+        )
+
+        if result is None:
+            view = create_error_message(
+                "Already Exists",
+                f"A redirect for `{domain}{path}` already exists."
+            )
+        else:
+            view = create_success_message(
+                "Redirect Added",
+                f"Successfully registered `{domain}{path}`.",
+                fields=[
+                    {"name": "ID", "value": f"`{result['id']}`"},
+                    {"name": "Domain", "value": f"`{domain}`"},
+                    {"name": "Path", "value": f"`{path}`"},
+                    {"name": "Description", "value": description or "*None*"},
+                ]
+            )
+        await self.reply_with_tracking(message, view)
+
+    async def _redirect_list(self, message: discord.Message, domain: str = None):
+        """List redirect links, optionally filtered by domain."""
+        links = await db.get_redirect_links(domain=domain, limit=50)
+        total = await db.count_redirect_links(domain=domain)
+
+        container = ui.Container()
+        title = f"### {EMOJIS['web']} Redirect Links"
+        if domain:
+            title += f" — `{domain}`"
+        title += f"\n-# {total} link{'s' if total != 1 else ''} total"
+        container.add_item(ui.TextDisplay(title))
+
+        if not links:
+            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container.add_item(ui.TextDisplay("*No redirect links found.*"))
+        else:
+            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+            for link in links:
+                added_ts = int(link["added_at"].timestamp()) if link.get("added_at") else 0
+                line = (
+                    f"`#{link['id']}` **{link['domain']}{link['path']}**\n"
+                    f"-# {link['description'] or '*No description*'} • Added by <@{link['added_by']}> <t:{added_ts}:R>"
+                )
+                container.add_item(ui.TextDisplay(line))
+
+        view = ui.LayoutView()
+        view.add_item(container)
+        await self.reply_with_tracking(message, view)
+
+    async def _redirect_info(self, message: discord.Message, args: str):
+        """Show details for a redirect link by ID."""
+        if not args.isdigit():
+            view = create_error_message("Invalid ID", "Please provide a numeric redirect ID.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        link = await db.get_redirect_link(int(args))
+        if not link:
+            view = create_error_message("Not Found", f"No redirect link with ID `{args}`.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        added_ts = int(link["added_at"].timestamp()) if link.get("added_at") else 0
+        view = create_info_message(
+            f"Redirect #{link['id']}",
+            f"`{link['domain']}{link['path']}`",
+            fields=[
+                {"name": "Domain", "value": f"`{link['domain']}`"},
+                {"name": "Path", "value": f"`{link['path']}`"},
+                {"name": "Description", "value": link["description"] or "*None*"},
+                {"name": "Added by", "value": f"<@{link['added_by']}> (`{link['added_by']}`)"},
+                {"name": "Added at", "value": f"<t:{added_ts}:F>"},
+            ]
+        )
+        await self.reply_with_tracking(message, view)
+
+    async def _redirect_delete(self, message: discord.Message, args: str):
+        """Delete a redirect link by ID."""
+        if not args.isdigit():
+            view = create_error_message("Invalid ID", "Please provide a numeric redirect ID.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        link_id = int(args)
+        link = await db.get_redirect_link(link_id)
+        if not link:
+            view = create_error_message("Not Found", f"No redirect link with ID `{link_id}`.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        deleted = await db.delete_redirect_link(link_id)
+        if deleted:
+            view = create_success_message(
+                "Redirect Deleted",
+                f"Removed `{link['domain']}{link['path']}` (ID `{link_id}`)."
+            )
+        else:
+            view = create_error_message("Error", "Failed to delete the redirect link.")
         await self.reply_with_tracking(message, view)
 
 

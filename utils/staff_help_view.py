@@ -95,7 +95,11 @@ COMMAND_CATEGORIES = {
             ("d.error [error_code]", "Get detailed error information"),
             ("d.sync", "Sync slash commands globally"),
             ("d.serverlist", "List all servers the bot is in"),
-            ("d.setup-announcements [guild_id]", "Setup announcement channel following for a guild")
+            ("d.setup-announcements [guild_id]", "Setup announcement channel following for a guild"),
+            ("d.redirect add <domain> <path> [desc]", "Add a redirect link"),
+            ("d.redirect list [domain]", "List redirect links"),
+            ("d.redirect info <id>", "Show details of a redirect link"),
+            ("d.redirect delete <id>", "Delete a redirect link")
         ],
         "roles": [StaffRole.DEV]
     }
