@@ -93,7 +93,20 @@ COMMAND_CATEGORIES = {
             ("d.sql [query]", "Execute SQL query on the database"),
             ("d.jsk [code]", "Execute Python code (Jishaku)"),
             ("d.error [error_code]", "Get detailed error information"),
-            ("d.sync", "Sync slash commands globally")
+            ("d.sync", "Sync slash commands globally"),
+            ("d.serverlist", "List all servers the bot is in"),
+            ("d.setup-announcements [guild_id]", "Setup announcement channel following for a guild"),
+            ("d.redirect add <domain> <path> [desc]", "Add a redirect link"),
+            ("d.redirect list [domain]", "List redirect links"),
+            ("d.redirect info <id>", "Show details of a redirect link"),
+            ("d.redirect delete <id>", "Delete a redirect link"),
+            ("d.banner add", "Create a new banner (typed or custom)"),
+            ("d.banner list", "List all banners"),
+            ("d.banner info <id>", "Show banner details"),
+            ("d.banner activate <id>", "Activate a banner (deactivates others)"),
+            ("d.banner deactivate", "Deactivate the current active banner"),
+            ("d.banner edit <id>", "Edit a banner"),
+            ("d.banner delete <id>", "Delete a banner")
         ],
         "roles": [StaffRole.DEV]
     }

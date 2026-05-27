@@ -408,6 +408,57 @@ class ModdyDatabase:
                 ON saved_roles(saved_at)
             """)
 
+            # Table des liens de redirection
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS redirect_links (
+                    id SERIAL PRIMARY KEY,
+                    domain VARCHAR(253) NOT NULL,
+                    path VARCHAR(2048) NOT NULL,
+                    description TEXT,
+                    added_by BIGINT NOT NULL,
+                    added_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(domain, path)
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_redirect_links_domain
+                ON redirect_links(domain)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_redirect_links_added_by
+                ON redirect_links(added_by)
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS banners (
+                    id SERIAL PRIMARY KEY,
+                    type VARCHAR(20),
+                    message TEXT NOT NULL,
+                    icon_svg TEXT,
+                    color VARCHAR(7),
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                    show_dashboard BOOLEAN NOT NULL DEFAULT TRUE,
+                    show_website BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_by BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT banners_type_values CHECK (
+                        type IS NULL OR type IN ('announcement', 'incident', 'maintenance', 'information', 'warning', 'resolved')
+                    ),
+                    CONSTRAINT banners_type_xor_custom CHECK (
+                        (type IS NOT NULL AND icon_svg IS NULL AND color IS NULL)
+                        OR
+                        (type IS NULL AND icon_svg IS NOT NULL AND color IS NOT NULL)
+                    )
+                )
+            """)
+
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_banners_single_active ON banners(is_active) WHERE is_active = TRUE
+            """)
+
             logger.info("✅ Tables initialisées")
 
     # ================ GESTION DES ERREURS ================
@@ -1840,6 +1891,219 @@ class ModdyDatabase:
         except Exception as e:
             logger.error(f"❌ Error getting saved roles count: {e}", exc_info=True)
             return 0
+
+
+    # ================ GESTION DES LIENS DE REDIRECTION ================
+
+    async def create_redirect_link(
+        self,
+        domain: str,
+        path: str,
+        added_by: int,
+        description: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Crée un lien de redirection. Retourne le lien créé, ou None si (domain, path) existe déjà."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO redirect_links (domain, path, description, added_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (domain, path) DO NOTHING
+                RETURNING *
+            """, domain, path, description, added_by)
+            return dict(row) if row else None
+
+    async def get_redirect_link(self, link_id: int) -> Optional[Dict[str, Any]]:
+        """Récupère un lien de redirection par son ID."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM redirect_links WHERE id = $1",
+                link_id
+            )
+            return dict(row) if row else None
+
+    async def get_redirect_link_by_path(self, domain: str, path: str) -> Optional[Dict[str, Any]]:
+        """Récupère un lien de redirection par son domaine et son path."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM redirect_links WHERE domain = $1 AND path = $2",
+                domain, path
+            )
+            return dict(row) if row else None
+
+    async def get_redirect_links(
+        self,
+        domain: str = None,
+        added_by: int = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Liste les liens de redirection, avec filtres optionnels par domaine ou auteur."""
+        async with self.pool.acquire() as conn:
+            query = "SELECT * FROM redirect_links WHERE 1=1"
+            params = []
+            param_num = 1
+
+            if domain is not None:
+                query += f" AND domain = ${param_num}"
+                params.append(domain)
+                param_num += 1
+
+            if added_by is not None:
+                query += f" AND added_by = ${param_num}"
+                params.append(added_by)
+                param_num += 1
+
+            query += f" ORDER BY added_at DESC LIMIT ${param_num} OFFSET ${param_num + 1}"
+            params.extend([limit, offset])
+
+            rows = await conn.fetch(query, *params)
+            return [dict(row) for row in rows]
+
+    async def update_redirect_link(
+        self,
+        link_id: int,
+        description: str = None,
+        path: str = None
+    ) -> bool:
+        """Met à jour la description et/ou le path d'un lien. Retourne True si modifié."""
+        async with self.pool.acquire() as conn:
+            updates = []
+            params = []
+            param_num = 1
+
+            if description is not None:
+                updates.append(f"description = ${param_num}")
+                params.append(description)
+                param_num += 1
+
+            if path is not None:
+                updates.append(f"path = ${param_num}")
+                params.append(path)
+                param_num += 1
+
+            if not updates:
+                return False
+
+            params.append(link_id)
+            result = await conn.execute(
+                f"UPDATE redirect_links SET {', '.join(updates)} WHERE id = ${param_num}",
+                *params
+            )
+            return result == "UPDATE 1"
+
+    async def delete_redirect_link(self, link_id: int) -> bool:
+        """Supprime un lien de redirection. Retourne True si supprimé."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM redirect_links WHERE id = $1",
+                link_id
+            )
+            return result == "DELETE 1"
+
+    async def count_redirect_links(self, domain: str = None) -> int:
+        """Compte les liens de redirection, optionnellement filtrés par domaine."""
+        async with self.pool.acquire() as conn:
+            if domain:
+                return await conn.fetchval(
+                    "SELECT COUNT(*) FROM redirect_links WHERE domain = $1",
+                    domain
+                )
+            return await conn.fetchval("SELECT COUNT(*) FROM redirect_links")
+
+    # ================ GESTION DES BANNERS ================
+
+    async def create_banner(
+        self,
+        type_: Optional[str],
+        message: str,
+        icon_svg: Optional[str],
+        color: Optional[str],
+        show_dashboard: bool,
+        show_website: bool,
+        created_by: int
+    ) -> Dict[str, Any]:
+        if type_ is not None and (icon_svg is not None or color is not None):
+            raise ValueError("Cannot set both type and icon_svg/color")
+        if type_ is None and (icon_svg is None or color is None):
+            raise ValueError("Must provide either type or both icon_svg and color")
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO banners (type, message, icon_svg, color, show_dashboard, show_website, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING *
+            """, type_, message, icon_svg, color, show_dashboard, show_website, created_by)
+            return dict(row)
+
+    async def get_banner(self, banner_id: int) -> Optional[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM banners WHERE id = $1", banner_id)
+            return dict(row) if row else None
+
+    async def get_active_banner(self) -> Optional[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM banners WHERE is_active = TRUE")
+            return dict(row) if row else None
+
+    async def list_banners(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM banners ORDER BY created_at DESC LIMIT $1 OFFSET $2
+            """, limit, offset)
+            return [dict(row) for row in rows]
+
+    async def activate_banner(self, banner_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("UPDATE banners SET is_active = FALSE WHERE is_active = TRUE")
+                result = await conn.execute("""
+                    UPDATE banners SET is_active = TRUE, updated_at = NOW() WHERE id = $1
+                """, banner_id)
+            return result == "UPDATE 1"
+
+    async def deactivate_all_banners(self) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("UPDATE banners SET is_active = FALSE WHERE is_active = TRUE")
+            return result != "UPDATE 0"
+
+    async def update_banner(
+        self,
+        banner_id: int,
+        message: Optional[str] = None,
+        show_dashboard: Optional[bool] = None,
+        show_website: Optional[bool] = None
+    ) -> bool:
+        updates = ["updated_at = NOW()"]
+        params = []
+        param_num = 1
+
+        if message is not None:
+            updates.append(f"message = ${param_num}")
+            params.append(message)
+            param_num += 1
+
+        if show_dashboard is not None:
+            updates.append(f"show_dashboard = ${param_num}")
+            params.append(show_dashboard)
+            param_num += 1
+
+        if show_website is not None:
+            updates.append(f"show_website = ${param_num}")
+            params.append(show_website)
+            param_num += 1
+
+        params.append(banner_id)
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE banners SET {', '.join(updates)} WHERE id = ${param_num}",
+                *params
+            )
+            return result == "UPDATE 1"
+
+    async def delete_banner(self, banner_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM banners WHERE id = $1", banner_id)
+            return result == "DELETE 1"
 
 
 # Instance globale (sera initialisée dans bot.py)
