@@ -408,6 +408,29 @@ class ModdyDatabase:
                 ON saved_roles(saved_at)
             """)
 
+            # Table des liens de redirection
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS redirect_links (
+                    id SERIAL PRIMARY KEY,
+                    domain VARCHAR(253) NOT NULL,
+                    path VARCHAR(2048) NOT NULL,
+                    description TEXT,
+                    added_by BIGINT NOT NULL,
+                    added_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(domain, path)
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_redirect_links_domain
+                ON redirect_links(domain)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_redirect_links_added_by
+                ON redirect_links(added_by)
+            """)
+
             logger.info("✅ Tables initialisées")
 
     # ================ GESTION DES ERREURS ================
@@ -1840,6 +1863,124 @@ class ModdyDatabase:
         except Exception as e:
             logger.error(f"❌ Error getting saved roles count: {e}", exc_info=True)
             return 0
+
+
+    # ================ GESTION DES LIENS DE REDIRECTION ================
+
+    async def create_redirect_link(
+        self,
+        domain: str,
+        path: str,
+        added_by: int,
+        description: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """Crée un lien de redirection. Retourne le lien créé, ou None si (domain, path) existe déjà."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO redirect_links (domain, path, description, added_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (domain, path) DO NOTHING
+                RETURNING *
+            """, domain, path, description, added_by)
+            return dict(row) if row else None
+
+    async def get_redirect_link(self, link_id: int) -> Optional[Dict[str, Any]]:
+        """Récupère un lien de redirection par son ID."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM redirect_links WHERE id = $1",
+                link_id
+            )
+            return dict(row) if row else None
+
+    async def get_redirect_link_by_path(self, domain: str, path: str) -> Optional[Dict[str, Any]]:
+        """Récupère un lien de redirection par son domaine et son path."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM redirect_links WHERE domain = $1 AND path = $2",
+                domain, path
+            )
+            return dict(row) if row else None
+
+    async def get_redirect_links(
+        self,
+        domain: str = None,
+        added_by: int = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Liste les liens de redirection, avec filtres optionnels par domaine ou auteur."""
+        async with self.pool.acquire() as conn:
+            query = "SELECT * FROM redirect_links WHERE 1=1"
+            params = []
+            param_num = 1
+
+            if domain is not None:
+                query += f" AND domain = ${param_num}"
+                params.append(domain)
+                param_num += 1
+
+            if added_by is not None:
+                query += f" AND added_by = ${param_num}"
+                params.append(added_by)
+                param_num += 1
+
+            query += f" ORDER BY added_at DESC LIMIT ${param_num} OFFSET ${param_num + 1}"
+            params.extend([limit, offset])
+
+            rows = await conn.fetch(query, *params)
+            return [dict(row) for row in rows]
+
+    async def update_redirect_link(
+        self,
+        link_id: int,
+        description: str = None,
+        path: str = None
+    ) -> bool:
+        """Met à jour la description et/ou le path d'un lien. Retourne True si modifié."""
+        async with self.pool.acquire() as conn:
+            updates = []
+            params = []
+            param_num = 1
+
+            if description is not None:
+                updates.append(f"description = ${param_num}")
+                params.append(description)
+                param_num += 1
+
+            if path is not None:
+                updates.append(f"path = ${param_num}")
+                params.append(path)
+                param_num += 1
+
+            if not updates:
+                return False
+
+            params.append(link_id)
+            result = await conn.execute(
+                f"UPDATE redirect_links SET {', '.join(updates)} WHERE id = ${param_num}",
+                *params
+            )
+            return result == "UPDATE 1"
+
+    async def delete_redirect_link(self, link_id: int) -> bool:
+        """Supprime un lien de redirection. Retourne True si supprimé."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM redirect_links WHERE id = $1",
+                link_id
+            )
+            return result == "DELETE 1"
+
+    async def count_redirect_links(self, domain: str = None) -> int:
+        """Compte les liens de redirection, optionnellement filtrés par domaine."""
+        async with self.pool.acquire() as conn:
+            if domain:
+                return await conn.fetchval(
+                    "SELECT COUNT(*) FROM redirect_links WHERE domain = $1",
+                    domain
+                )
+            return await conn.fetchval("SELECT COUNT(*) FROM redirect_links")
 
 
 # Instance globale (sera initialisée dans bot.py)
