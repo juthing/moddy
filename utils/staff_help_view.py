@@ -99,7 +99,14 @@ COMMAND_CATEGORIES = {
             ("d.redirect add <domain> <path> [desc]", "Add a redirect link"),
             ("d.redirect list [domain]", "List redirect links"),
             ("d.redirect info <id>", "Show details of a redirect link"),
-            ("d.redirect delete <id>", "Delete a redirect link")
+            ("d.redirect delete <id>", "Delete a redirect link"),
+            ("d.banner add", "Create a new banner (typed or custom)"),
+            ("d.banner list", "List all banners"),
+            ("d.banner info <id>", "Show banner details"),
+            ("d.banner activate <id>", "Activate a banner (deactivates others)"),
+            ("d.banner deactivate", "Deactivate the current active banner"),
+            ("d.banner edit <id>", "Edit a banner"),
+            ("d.banner delete <id>", "Delete a banner")
         ],
         "roles": [StaffRole.DEV]
     }

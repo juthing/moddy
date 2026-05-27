@@ -20,6 +20,7 @@ from utils.staff_logger import staff_logger
 from staff.base import StaffCommandsCog
 from utils.announcement_setup import setup_announcement_channel
 from cogs.error_handler import BaseView
+from utils.banner_views import BannerAddView, BannerEditModal
 
 logger = logging.getLogger('moddy.dev_commands')
 
@@ -195,6 +196,8 @@ class DeveloperCommands(StaffCommandsCog):
             await self.handle_serverlist_command(message, args)
         elif command_name == "redirect":
             await self.handle_redirect_command(message, args)
+        elif command_name == "banner":
+            await self.handle_banner_command(message, args)
         else:
             view = create_error_message("Unknown Command", f"Developer command `{command_name}` not found.")
             await self.reply_with_tracking(message, view)
@@ -1050,6 +1053,210 @@ class DeveloperCommands(StaffCommandsCog):
             )
         else:
             view = create_error_message("Error", "Failed to delete the redirect link.")
+        await self.reply_with_tracking(message, view)
+
+    async def handle_banner_command(self, message: discord.Message, args: str):
+        if staff_logger:
+            await staff_logger.log_command("d", "banner", message.author, args=args or "no args")
+
+        parts = (args or "").split(None, 1)
+        subcommand = parts[0].lower() if parts else ""
+        sub_args = parts[1] if len(parts) > 1 else ""
+
+        if subcommand == "add":
+            await self._banner_add(message)
+        elif subcommand == "list":
+            await self._banner_list(message)
+        elif subcommand == "info":
+            await self._banner_info(message, sub_args.strip())
+        elif subcommand == "activate":
+            await self._banner_activate(message, sub_args.strip())
+        elif subcommand == "deactivate":
+            await self._banner_deactivate(message)
+        elif subcommand == "edit":
+            await self._banner_edit(message, sub_args.strip())
+        elif subcommand == "delete":
+            await self._banner_delete(message, sub_args.strip())
+        else:
+            view = create_info_message(
+                "Banner Commands",
+                "Manage banners displayed on the dashboard and website.",
+                fields=[
+                    {"name": "Add", "value": "`d.banner add`"},
+                    {"name": "List", "value": "`d.banner list`"},
+                    {"name": "Info", "value": "`d.banner info <id>`"},
+                    {"name": "Activate", "value": "`d.banner activate <id>`"},
+                    {"name": "Deactivate", "value": "`d.banner deactivate`"},
+                    {"name": "Edit", "value": "`d.banner edit <id>`"},
+                    {"name": "Delete", "value": "`d.banner delete <id>`"},
+                ]
+            )
+            await self.reply_with_tracking(message, view)
+
+    async def _banner_add(self, message: discord.Message):
+        view = BannerAddView()
+        await self.reply_with_tracking(message, view)
+
+    async def _banner_list(self, message: discord.Message):
+        banners = await db.list_banners(limit=50)
+
+        container = ui.Container()
+        title = f"### {EMOJIS['web']} Banners\n-# {len(banners)} banner{'s' if len(banners) != 1 else ''} total"
+        container.add_item(ui.TextDisplay(title))
+
+        if not banners:
+            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container.add_item(ui.TextDisplay("*No banners found.*"))
+        else:
+            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+            for b in banners:
+                active_tag = " **[ACTIVE]**" if b["is_active"] else ""
+                type_tag = b["type"] if b["type"] else "custom"
+                message_preview = (b["message"][:50] + "...") if len(b["message"]) > 50 else b["message"]
+                surfaces = []
+                if b["show_dashboard"]:
+                    surfaces.append("dashboard")
+                if b["show_website"]:
+                    surfaces.append("website")
+                surfaces_str = "/".join(surfaces) if surfaces else "none"
+                created_ts = int(b["created_at"].timestamp()) if b.get("created_at") else 0
+                line = (
+                    f"`#{b['id']}`{active_tag} **{type_tag}** | {message_preview} | "
+                    f"{surfaces_str} | <t:{created_ts}:R>"
+                )
+                container.add_item(ui.TextDisplay(line))
+
+        view = ui.LayoutView()
+        view.add_item(container)
+        await self.reply_with_tracking(message, view)
+
+    async def _banner_info(self, message: discord.Message, args: str):
+        if not args.isdigit():
+            view = create_error_message("Invalid ID", "Please provide a numeric banner ID.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        banner = await db.get_banner(int(args))
+        if not banner:
+            view = create_error_message("Not Found", f"No banner with ID `{args}`.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        created_ts = int(banner["created_at"].timestamp()) if banner.get("created_at") else 0
+        updated_ts = int(banner["updated_at"].timestamp()) if banner.get("updated_at") else 0
+        type_val = banner["type"] if banner["type"] else "custom"
+        surfaces = []
+        if banner["show_dashboard"]:
+            surfaces.append("Dashboard")
+        if banner["show_website"]:
+            surfaces.append("Website")
+
+        view = create_info_message(
+            f"Banner #{banner['id']}",
+            f"{'**[ACTIVE]** ' if banner['is_active'] else ''}Type: **{type_val}**",
+            fields=[
+                {"name": "Message", "value": banner["message"][:1000]},
+                {"name": "Surfaces", "value": ", ".join(surfaces) if surfaces else "None"},
+                {"name": "Color", "value": f"`{banner['color']}`" if banner.get("color") else "*N/A*"},
+                {"name": "Created by", "value": f"<@{banner['created_by']}> (`{banner['created_by']}`)"},
+                {"name": "Created at", "value": f"<t:{created_ts}:F>"},
+                {"name": "Updated at", "value": f"<t:{updated_ts}:R>"},
+            ]
+        )
+        await self.reply_with_tracking(message, view)
+
+    async def _banner_activate(self, message: discord.Message, args: str):
+        if not args.isdigit():
+            view = create_error_message("Invalid ID", "Please provide a numeric banner ID.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        banner_id = int(args)
+        banner = await db.get_banner(banner_id)
+        if not banner:
+            view = create_error_message("Not Found", f"No banner with ID `{banner_id}`.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        success = await db.activate_banner(banner_id)
+        if success:
+            view = create_success_message(
+                "Banner Activated",
+                f"Banner `#{banner_id}` is now active. All other banners have been deactivated."
+            )
+        else:
+            view = create_error_message("Error", "Failed to activate the banner.")
+        await self.reply_with_tracking(message, view)
+
+    async def _banner_deactivate(self, message: discord.Message):
+        success = await db.deactivate_all_banners()
+        if success:
+            view = create_success_message("Banners Deactivated", "The active banner has been deactivated.")
+        else:
+            view = create_info_message("No Active Banner", "There is no active banner to deactivate.")
+        await self.reply_with_tracking(message, view)
+
+    async def _banner_edit(self, message: discord.Message, args: str):
+        if not args.isdigit():
+            view = create_error_message("Invalid ID", "Please provide a numeric banner ID.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        banner_id = int(args)
+        banner = await db.get_banner(banner_id)
+        if not banner:
+            view = create_error_message("Not Found", f"No banner with ID `{banner_id}`.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        container = ui.Container()
+        container.add_item(ui.TextDisplay(f"### Edit Banner #{banner_id}\nClick the button below to open the edit form."))
+
+        button_row = ui.ActionRow()
+
+        edit_button = ui.Button(
+            label="Open Edit Form",
+            style=discord.ButtonStyle.secondary
+        )
+
+        async def open_edit_modal(interaction: discord.Interaction):
+            modal = BannerEditModal(
+                banner_id=banner_id,
+                current_message=banner["message"],
+                current_show_dashboard=banner["show_dashboard"],
+                current_show_website=banner["show_website"]
+            )
+            await interaction.response.send_modal(modal)
+
+        edit_button.callback = open_edit_modal
+        button_row.add_item(edit_button)
+        container.add_item(button_row)
+
+        view = ui.LayoutView()
+        view.add_item(container)
+        await self.reply_with_tracking(message, view)
+
+    async def _banner_delete(self, message: discord.Message, args: str):
+        if not args.isdigit():
+            view = create_error_message("Invalid ID", "Please provide a numeric banner ID.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        banner_id = int(args)
+        banner = await db.get_banner(banner_id)
+        if not banner:
+            view = create_error_message("Not Found", f"No banner with ID `{banner_id}`.")
+            await self.reply_with_tracking(message, view)
+            return
+
+        deleted = await db.delete_banner(banner_id)
+        if deleted:
+            view = create_success_message(
+                "Banner Deleted",
+                f"Banner `#{banner_id}` has been deleted."
+            )
+        else:
+            view = create_error_message("Error", "Failed to delete the banner.")
         await self.reply_with_tracking(message, view)
 
 

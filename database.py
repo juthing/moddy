@@ -431,6 +431,34 @@ class ModdyDatabase:
                 ON redirect_links(added_by)
             """)
 
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS banners (
+                    id SERIAL PRIMARY KEY,
+                    type VARCHAR(20),
+                    message TEXT NOT NULL,
+                    icon_svg TEXT,
+                    color VARCHAR(7),
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                    show_dashboard BOOLEAN NOT NULL DEFAULT TRUE,
+                    show_website BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_by BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT banners_type_values CHECK (
+                        type IS NULL OR type IN ('announcement', 'incident', 'maintenance', 'information', 'warning', 'resolved')
+                    ),
+                    CONSTRAINT banners_type_xor_custom CHECK (
+                        (type IS NOT NULL AND icon_svg IS NULL AND color IS NULL)
+                        OR
+                        (type IS NULL AND icon_svg IS NOT NULL AND color IS NOT NULL)
+                    )
+                )
+            """)
+
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_banners_single_active ON banners(is_active) WHERE is_active = TRUE
+            """)
+
             logger.info("✅ Tables initialisées")
 
     # ================ GESTION DES ERREURS ================
@@ -1981,6 +2009,101 @@ class ModdyDatabase:
                     domain
                 )
             return await conn.fetchval("SELECT COUNT(*) FROM redirect_links")
+
+    # ================ GESTION DES BANNERS ================
+
+    async def create_banner(
+        self,
+        type_: Optional[str],
+        message: str,
+        icon_svg: Optional[str],
+        color: Optional[str],
+        show_dashboard: bool,
+        show_website: bool,
+        created_by: int
+    ) -> Dict[str, Any]:
+        if type_ is not None and (icon_svg is not None or color is not None):
+            raise ValueError("Cannot set both type and icon_svg/color")
+        if type_ is None and (icon_svg is None or color is None):
+            raise ValueError("Must provide either type or both icon_svg and color")
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                INSERT INTO banners (type, message, icon_svg, color, show_dashboard, show_website, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING *
+            """, type_, message, icon_svg, color, show_dashboard, show_website, created_by)
+            return dict(row)
+
+    async def get_banner(self, banner_id: int) -> Optional[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM banners WHERE id = $1", banner_id)
+            return dict(row) if row else None
+
+    async def get_active_banner(self) -> Optional[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM banners WHERE is_active = TRUE")
+            return dict(row) if row else None
+
+    async def list_banners(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM banners ORDER BY created_at DESC LIMIT $1 OFFSET $2
+            """, limit, offset)
+            return [dict(row) for row in rows]
+
+    async def activate_banner(self, banner_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("UPDATE banners SET is_active = FALSE WHERE is_active = TRUE")
+                result = await conn.execute("""
+                    UPDATE banners SET is_active = TRUE, updated_at = NOW() WHERE id = $1
+                """, banner_id)
+            return result == "UPDATE 1"
+
+    async def deactivate_all_banners(self) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("UPDATE banners SET is_active = FALSE WHERE is_active = TRUE")
+            return result != "UPDATE 0"
+
+    async def update_banner(
+        self,
+        banner_id: int,
+        message: Optional[str] = None,
+        show_dashboard: Optional[bool] = None,
+        show_website: Optional[bool] = None
+    ) -> bool:
+        updates = ["updated_at = NOW()"]
+        params = []
+        param_num = 1
+
+        if message is not None:
+            updates.append(f"message = ${param_num}")
+            params.append(message)
+            param_num += 1
+
+        if show_dashboard is not None:
+            updates.append(f"show_dashboard = ${param_num}")
+            params.append(show_dashboard)
+            param_num += 1
+
+        if show_website is not None:
+            updates.append(f"show_website = ${param_num}")
+            params.append(show_website)
+            param_num += 1
+
+        params.append(banner_id)
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE banners SET {', '.join(updates)} WHERE id = ${param_num}",
+                *params
+            )
+            return result == "UPDATE 1"
+
+    async def delete_banner(self, banner_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM banners WHERE id = $1", banner_id)
+            return result == "DELETE 1"
 
 
 # Instance globale (sera initialisée dans bot.py)
