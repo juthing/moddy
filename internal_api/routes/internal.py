@@ -129,12 +129,12 @@ async def notify_user(payload: InternalNotifyUserRequest):
         # Mettre à jour l'attribut PREMIUM dans la base de données
         await _update_premium_attribute(bot, payload)
 
-        # Créer le message de notification basé sur l'action
-        message = _create_notification_message(payload)
+        # Créer la vue de notification basée sur l'action
+        notification_view = _create_notification_view(payload)
 
         # Envoyer le message en DM
         try:
-            await user.send(message)
+            await user.send(view=notification_view)
             logger.info(f"✅ Notification envoyée à {user} ({payload.discord_id})")
             notification_sent = True
         except discord.Forbidden:
@@ -267,6 +267,108 @@ async def update_user_role(payload: InternalUpdateRoleRequest):
         )
 
 
+class SubscriptionCreatedView(discord.ui.LayoutView):
+    container1 = discord.ui.Container(
+        discord.ui.TextDisplay(
+            content="### <a:GemStone_animated:1509243505845731389> Welcome to Moddy Max !\nYour Moddy Max subscription is now active ! Your servers are in good hands.\nYour support truly warms our hearts <3\n"
+        ),
+        discord.ui.MediaGallery(
+            discord.MediaGalleryItem(
+                media="https://files.catbox.moe/vdqse1.gif",
+            ),
+        ),
+        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+        discord.ui.TextDisplay(
+            content="-# You now have access to premium features everywhere on Discord as a personal app and on 5 servers of your choice. Use </subscription:1459599678139011357> for details. Need help? Contact our [support](https://moddy.app/support).\n"
+        ),
+        accent_colour=discord.Colour(2382303),
+    )
+
+    action_row1 = discord.ui.ActionRow(
+        discord.ui.Button(
+            url="https://dashboard.moddy.app/billing",
+            style=discord.ButtonStyle.link,
+            label="Manage subscription",
+        ),
+        discord.ui.Button(
+            url="https://dashboard.moddy.app/select-premium-servers",
+            style=discord.ButtonStyle.link,
+            label="Select servers",
+        ),
+        discord.ui.Button(
+            url="https://moddy.app/support",
+            style=discord.ButtonStyle.link,
+            label="Support",
+        ),
+    )
+
+
+def _create_notification_view(payload: InternalNotifyUserRequest) -> discord.ui.LayoutView:
+    """
+    Crée une vue Components V2 pour les notifications d'abonnement.
+    """
+    PREMIUM_EMOJI = "<:premium:1401602724801548381>"
+    MANAGE_BUTTON = discord.ui.Button(
+        url="https://dashboard.moddy.app/billing",
+        style=discord.ButtonStyle.link,
+        label="Manage subscription",
+    )
+    SUPPORT_BUTTON = discord.ui.Button(
+        url="https://moddy.app/support",
+        style=discord.ButtonStyle.link,
+        label="Support",
+    )
+
+    if payload.action == "subscription_created":
+        return SubscriptionCreatedView()
+
+    action_configs = {
+        "subscription_updated": (
+            f"### {PREMIUM_EMOJI} Subscription Updated",
+            "Your Moddy Max subscription has been updated.",
+            "-# Use </subscription:1459599678139011357> to see your updated subscription details. Need help? Contact our [support](https://moddy.app/support).",
+        ),
+        "subscription_cancelled": (
+            f"### {PREMIUM_EMOJI} Subscription Cancelled",
+            "Your Moddy Max subscription has been cancelled.",
+            "-# Your premium access will remain active until the end of your current billing period. Need help? Contact our [support](https://moddy.app/support).",
+        ),
+        "plan_upgraded": (
+            f"### {PREMIUM_EMOJI} Welcome to Moddy Max !",
+            "Your plan has been upgraded to Moddy Max !",
+            "-# You now have access to premium features everywhere on Discord as a personal app and on 5 servers of your choice. Use </subscription:1459599678139011357> for details. Need help? Contact our [support](https://moddy.app/support).",
+        ),
+        "plan_downgraded": (
+            f"### {PREMIUM_EMOJI} Plan Updated",
+            "Your Moddy subscription plan has been updated.",
+            "-# Use </subscription:1459599678139011357> to see your current subscription details. Need help? Contact our [support](https://moddy.app/support).",
+        ),
+    }
+
+    title, body, footer = action_configs.get(
+        payload.action,
+        (
+            f"### {PREMIUM_EMOJI} Subscription Update",
+            "Your Moddy subscription has been updated.",
+            "-# Use </subscription:1459599678139011357> for details. Need help? Contact our [support](https://moddy.app/support).",
+        ),
+    )
+
+    view = discord.ui.LayoutView()
+    container = discord.ui.Container(
+        discord.ui.TextDisplay(content=f"{title}\n{body}\n"),
+        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
+        discord.ui.TextDisplay(content=footer),
+        accent_colour=discord.Colour(2382303),
+    )
+    view.add_item(container)
+
+    action_row = discord.ui.ActionRow(MANAGE_BUTTON, SUPPORT_BUTTON)
+    view.add_item(action_row)
+
+    return view
+
+
 async def _update_premium_attribute(bot, payload: InternalNotifyUserRequest):
     """
     Met à jour l'attribut PREMIUM dans la base de données selon l'action.
@@ -350,34 +452,3 @@ async def _update_premium_attribute(bot, payload: InternalNotifyUserRequest):
         logger.error(f"❌ Erreur lors de la mise à jour de l'attribut PREMIUM: {e}", exc_info=True)
 
 
-def _create_notification_message(payload: InternalNotifyUserRequest) -> str:
-    """
-    Crée un message de notification basé sur l'action.
-
-    Args:
-        payload: Données de notification
-
-    Returns:
-        Message formaté pour l'utilisateur
-    """
-    action_messages = {
-        "subscription_created": f"🎉 Votre abonnement **{payload.plan}** a été activé avec succès !",
-        "subscription_updated": f"✅ Votre abonnement **{payload.plan}** a été mis à jour.",
-        "subscription_cancelled": f"❌ Votre abonnement a été annulé.",
-        "plan_upgraded": f"⬆️ Votre plan a été amélioré vers **{payload.plan}** !",
-        "plan_downgraded": f"⬇️ Votre plan a été rétrogradé vers **{payload.plan}**.",
-    }
-
-    message = action_messages.get(
-        payload.action,
-        f"📬 Notification: {payload.action}"
-    )
-
-    # Ajouter des métadonnées si disponibles
-    if payload.metadata:
-        if "email" in payload.metadata:
-            message += f"\n\n📧 Email: {payload.metadata['email']}"
-
-    message += "\n\nMerci d'utiliser Moddy ! 🤖"
-
-    return message

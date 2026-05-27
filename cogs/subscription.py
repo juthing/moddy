@@ -7,13 +7,14 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from services import get_backend_client, BackendClientError
 from cogs.error_handler import BaseView
-from utils.i18n import t
 
 logger = logging.getLogger('moddy.cogs.subscription')
+
+PREMIUM_EMOJI = "<:premium:1401602724801548381>"
 
 
 class SubscriptionView(BaseView):
@@ -28,96 +29,95 @@ class SubscriptionView(BaseView):
         self._build_view()
 
     def _build_view(self):
-        """Construit l'interface avec les informations d'abonnement"""
         self.clear_items()
 
         container = ui.Container()
-
-        # Titre avec emoji premium
-        container.add_item(ui.TextDisplay(
-            f"### <:premium:1401602724801548381> Your Subscription"
-        ))
+        container.add_item(ui.TextDisplay(f"### {PREMIUM_EMOJI} Your Subscription"))
 
         if not self.subscription_data.get("has_subscription"):
-            # Pas d'abonnement actif
             container.add_item(ui.TextDisplay(
-                "You don't have an active subscription yet."
+                "You don't have an active Moddy Max subscription yet."
             ))
             container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
             container.add_item(ui.TextDisplay(
                 "**Subscribe to Moddy Max** to unlock premium features!\n"
                 "-# Visit our website to subscribe and get access to exclusive benefits."
             ))
-        else:
-            # Abonnement actif - afficher les détails
-            sub = self.subscription_data["subscription"]
+            self.add_item(container)
 
-            # Description
-            container.add_item(ui.TextDisplay(
-                "Here are your subscription details."
-            ))
+            action_row = ui.ActionRow(
+                ui.Button(
+                    url="https://dashboard.moddy.app/billing",
+                    style=discord.ButtonStyle.link,
+                    label="Subscribe",
+                ),
+                ui.Button(
+                    url="https://moddy.app/support",
+                    style=discord.ButtonStyle.link,
+                    label="Support",
+                ),
+            )
+            self.add_item(action_row)
+            return
 
+        sub = self.subscription_data["subscription"]
+        subscription_type = "Annuel" if sub["subscription_type"] == "yearly" else "Mensuel"
+        expire_ts = self._to_unix_timestamp(sub["current_period_end"])
+        expire_str = f"<t:{expire_ts}:R>" if expire_ts else sub["current_period_end"]
+
+        details = (
+            f"* **Abonnement:** Max\n"
+            f"* **Type:** {subscription_type}\n"
+            f"* **Expire:** {expire_str}\n"
+            f"* **Stripe Customer ID:** `{sub['customer_id']}`"
+        )
+        container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(ui.TextDisplay(details))
+
+        if sub.get("cancel_at_period_end"):
             container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-
-            # Status avec emoji
-            status_emoji = self._get_status_emoji(sub["status"])
             container.add_item(ui.TextDisplay(
-                f"**Status**\n"
-                f"-# {status_emoji} {sub['status'].capitalize()}"
+                f"<:warning:1446108410092195902> Your subscription will not renew — it ends {expire_str}."
             ))
 
-            # Type d'abonnement
-            subscription_type = "Yearly" if sub["subscription_type"] == "yearly" else "Monthly"
+        premium_servers = self.subscription_data.get("premium_servers")
+        if premium_servers:
+            container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
+            servers_list = "\n".join(
+                f"* {s.get('name', s.get('id', ''))}" for s in premium_servers
+            )
             container.add_item(ui.TextDisplay(
-                f"**Plan Type**\n"
-                f"-# {subscription_type}"
+                f"**Premium Servers**\n{servers_list}"
             ))
-
-            # Prix
-            amount_euros = sub["amount"] / 100
-            container.add_item(ui.TextDisplay(
-                f"**Price**\n"
-                f"-# {amount_euros}€ / {sub['subscription_type']}"
-            ))
-
-            # Date de renouvellement
-            renewal_date = self._format_date(sub["current_period_end"])
-            container.add_item(ui.TextDisplay(
-                f"**Next Renewal**\n"
-                f"-# {renewal_date}"
-            ))
-
-            # Si annulation programmée
-            if sub.get("cancel_at_period_end"):
-                container.add_item(ui.Separator(spacing=discord.SeparatorSpacing.small))
-                container.add_item(ui.TextDisplay(
-                    f"<:warning:1446108410092195902> **Cancellation Scheduled**\n"
-                    f"-# Your subscription will end on {renewal_date}"
-                ))
 
         self.add_item(container)
 
-    def _get_status_emoji(self, status: str) -> str:
-        """Retourne l'emoji correspondant au statut"""
-        status_emojis = {
-            "active": "<:green_status:1450929035428495505>",
-            "canceled": "<:red_status:1450929038758772940>",
-            "trialing": "<:yellow_status:1450929037542166669>",
-            "past_due": "<:warning:1446108410092195902>",
-            "incomplete": "<:yellow_status:1450929037542166669>",
-            "unpaid": "<:red_status:1450929038758772940>",
-        }
-        return status_emojis.get(status, "<:info:1401614681440784477>")
+        action_row = ui.ActionRow(
+            ui.Button(
+                url="https://dashboard.moddy.app/billing",
+                style=discord.ButtonStyle.link,
+                label="Manage subscription",
+            ),
+            ui.Button(
+                url="https://dashboard.moddy.app/select-premium-servers",
+                style=discord.ButtonStyle.link,
+                label="Select servers",
+            ),
+            ui.Button(
+                url="https://moddy.app/support",
+                style=discord.ButtonStyle.link,
+                label="Support",
+            ),
+        )
+        self.add_item(action_row)
 
-    def _format_date(self, iso_date: str) -> str:
-        """Formate une date ISO 8601 en format lisible"""
+    def _to_unix_timestamp(self, iso_date: str) -> int | None:
         try:
             dt = datetime.fromisoformat(iso_date.replace('Z', '+00:00'))
-            # Format: December 25, 2024
-            return dt.strftime("%B %d, %Y")
+            return int(dt.timestamp())
         except Exception as e:
-            logger.error(f"Error formatting date {iso_date}: {e}")
-            return iso_date
+            logger.error(f"Error converting date {iso_date}: {e}")
+            return None
 
 
 class Subscription(commands.Cog):
